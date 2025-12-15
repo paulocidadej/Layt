@@ -56,7 +56,7 @@ PREVIEW_DPI = int(os.environ.get("SOF_PREVIEW_DPI", "96"))  # low-DPI preview fo
 BASE_DPI = int(os.environ.get("SOF_OCR_DPI", "150"))  # default raster DPI for OCR (conservative, smaller)
 DENSE_DPI = int(os.environ.get("SOF_OCR_DENSE_DPI", "240"))  # kept for compatibility; dense pass disabled in fast path
 MAX_FILE_BYTES = int(os.environ.get("SOF_MAX_FILE_BYTES", str(40 * 1024 * 1024)))  # 40MB guard
-MAX_SECONDS = int(os.environ.get("SOF_MAX_SECONDS", "260"))  # keep under proxy timeout
+MAX_SECONDS = int(os.environ.get("SOF_MAX_SECONDS", "240"))  # default below typical 300s proxies
 PER_PAGE_SECONDS = int(os.environ.get("SOF_PAGE_SECONDS", "40"))  # hard ceiling per page to avoid tail spikes
 MIN_TEXT_CHARS = int(os.environ.get("SOF_MIN_TEXT_CHARS", "120"))  # treat page as text-rich above this
 PADDLE_LANG = os.environ.get("SOF_PADDLE_LANG", "en")
@@ -569,13 +569,16 @@ async def extract(file: UploadFile = File(...)):
         if USE_TEXTRACT:
             events, boxes, ocr_warnings, page_count = textract_ocr(content)
         else:
+            # Keep the time budget under common 300s proxy limits to avoid upstream timeouts.
+            # Override via SOF_MAX_SECONDS if you control the proxy ceiling.
+            effective_budget = min(MAX_SECONDS, 250)
             events, boxes, ocr_warnings, page_count = ocr_pdf_in_batches(
                 content,
                 max_pages=MAX_PDF_PAGES if MAX_PDF_PAGES > 0 else 0,
                 tess_cfg=BASE_TESS_CONFIG,
                 dense_cfg=DENSE_TESS_CONFIG,
-            time_budget=MAX_SECONDS,
-        )
+                time_budget=effective_budget,
+            )
     else:
         try:
             images = [Image.open(io.BytesIO(content))]

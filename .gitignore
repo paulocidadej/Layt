@@ -35,4 +35,7 @@ next-env.d.ts
 
 #sample_data
 /Sample_SOF
+/ocr
+/docs
+
 

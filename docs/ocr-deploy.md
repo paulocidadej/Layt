@@ -57,6 +57,74 @@ aws ecs update-service \
   --force-new-deployment
 ```
 
+## ECR connectivity (avoid timeouts pulling images)
+If tasks cannot reach ECR, either:
+- Ensure the service only uses the private subnets with NAT routes: `subnet-0a297c25f1fe3e612` and `subnet-0779f8b1e02bc908d` (remove `subnet-0a92611cdd9053273` from the service network config), then redeploy.
+- Or add VPC endpoints for ECR and S3:
+```bash
+# ECR API
+aws ec2 create-vpc-endpoint \
+  --vpc-id vpc-0b90354817269a8ec \
+  --service-name com.amazonaws.eu-north-1.ecr.api \
+  --vpc-endpoint-type Interface \
+  --subnet-ids subnet-0a297c25f1fe3e612 subnet-0779f8b1e02bc908d \
+  --security-group-ids sg-0923c68c0c42bb5fb \
+  --private-dns-enabled
+
+# ECR Docker (registry)
+aws ec2 create-vpc-endpoint \
+  --vpc-id vpc-0b90354817269a8ec \
+  --service-name com.amazonaws.eu-north-1.ecr.dkr \
+  --vpc-endpoint-type Interface \
+  --subnet-ids subnet-0a297c25f1fe3e612 subnet-0779f8b1e02bc908d \
+  --security-group-ids sg-0923c68c0c42bb5fb \
+  --private-dns-enabled
+
+# S3 (gateway) for ECR layer pulls
+aws ec2 create-vpc-endpoint \
+  --vpc-id vpc-0b90354817269a8ec \
+  --service-name com.amazonaws.eu-north-1.s3 \
+  --route-table-ids rtb-088c8cb2e34570203 rtb-08e67093a29ddb456
+```
+
+Update ECS service to use only NAT-routed subnets (run in CloudShell):
+```bash
+aws ecs update-service \
+  --cluster OCR \
+  --service ocr-service-qu9kzscy \
+  --network-configuration '{
+    "awsvpcConfiguration": {
+      "subnets": [
+        "subnet-0a297c25f1fe3e612",
+        "subnet-0779f8b1e02bc908d"
+      ],
+      "securityGroups": ["sg-0923c68c0c42bb5fb"],
+      "assignPublicIp": "DISABLED"
+    }
+  }' \
+  --force-new-deployment
+```
+
+SG rules required for ECR/Textract (allow 443):
+```bash
+# Inbound 443 from the task/endpoint SG itself
+aws ec2 authorize-security-group-ingress \
+  --group-id sg-0923c68c0c42bb5fb \
+  --protocol tcp --port 443 --source-group sg-0923c68c0c42bb5fb || true
+
+# Outbound allow all (simplest)
+aws ec2 authorize-security-group-egress \
+  --group-id sg-0923c68c0c42bb5fb \
+  --protocol -1 --port all --cidr 0.0.0.0/0 || true
+```
+
+## CloudWatch log group (must exist)
+Create the log group `/ecs/ocr` once per region:
+```bash
+aws logs create-log-group --log-group-name /ecs/ocr --region eu-north-1 || true
+aws logs put-retention-policy --log-group-name /ecs/ocr --retention-in-days 14 --region eu-north-1
+```
+
 Allow ALB SG to reach task SG on 8000 (replace sg-ALBID with your ALB SG ID):
 ```bash
 aws ec2 authorize-security-group-ingress \
@@ -81,6 +149,7 @@ aws logs tail /ecs/ocr --since 15m
 - Textract optional backend: set `USE_TEXTRACT=true` and `TEXTRACT_REGION=eu-north-1` (or your AWS region) on the OCR service to use Amazon Textract instead of PaddleOCR for PDFs.
 - ALB and task security group: `sg-0923c68c0c42bb5fb` (used by both ALB and tasks). Inbound TCP 8000 should allow from this SG; HTTP/80 inbound on the task SG is not needed. Health check path is `/health` on traffic port 8000.
 - ECR image: `516466084656.dkr.ecr.eu-north-1.amazonaws.com/zouheir/sof-ocr:latest`
+- ALB subnets must be public (IGW route + map-public-ip). Use `subnet-0a92611cdd9053273` (1a) and the new public `subnet-0ec07187ebfa600a7` (1b) for the ALB; keep ECS tasks in the private/NAT subnets `subnet-0a297c25f1fe3e612`, `subnet-0779f8b1e02bc908d`.
 
 ## Update your app to use the service
 - If fronted by an ALB/private DNS, keep the same host; otherwise set `SOF_OCR_ENDPOINT` in the Next.js app to the reachable URL (e.g., `http://<host>:8000/extract`).
@@ -133,5 +202,76 @@ aws ecs update-service \
   --cluster OCR \
   --service ocr-service-qu9kzscy \
   --task-definition "$NEW_TD" \
+  --force-new-deployment
+```
+
+## Textract VPC endpoint (no NAT needed) — using your VPC and subnets
+Create an interface endpoint so tasks can reach Textract privately:
+```bash
+aws ec2 create-vpc-endpoint \
+  --vpc-id vpc-0b90354817269a8ec \
+  --service-name com.amazonaws.eu-north-1.textract \
+  --vpc-endpoint-type Interface \
+  --subnet-ids subnet-0a92611cdd9053273 subnet-0a297c25f1fe3e612 subnet-0779f8b1e02bc908d \
+  --security-group-ids sg-0923c68c0c42bb5fb \
+  --private-dns-enabled
+```
+
+After creating the endpoint, redeploy the service (Textract env vars already set):
+```bash
+aws ecs update-service \
+  --cluster OCR \
+  --service ocr-service-qu9kzscy \
+  --force-new-deployment
+```
+
+## NAT Gateway for Textract egress (region eu-north-1)
+If the Textract VPC endpoint is not available, add internet egress via a NAT in this VPC.
+
+Use CloudShell step-by-step (no placeholders):
+```bash
+VPC_ID=vpc-0b90354817269a8ec
+PRIVATE_SUBNETS=("subnet-0a92611cdd9053273" "subnet-0a297c25f1fe3e612" "subnet-0779f8b1e02bc908d")
+PUBLIC_SUBNET="subnet-0a92611cdd9053273"   # re-use this subnet as public for NAT
+
+# 1) Ensure an Internet Gateway exists; create/attach if missing
+IGW_ID=$(aws ec2 describe-internet-gateways --filters Name=attachment.vpc-id,Values=$VPC_ID --query 'InternetGateways[0].InternetGatewayId' --output text)
+if [ "$IGW_ID" = "None" ] || [ -z "$IGW_ID" ]; then
+  IGW_ID=$(aws ec2 create-internet-gateway --query 'InternetGateway.InternetGatewayId' --output text)
+  aws ec2 attach-internet-gateway --internet-gateway-id "$IGW_ID" --vpc-id "$VPC_ID"
+fi
+echo "IGW: $IGW_ID"
+
+# 2) Make PUBLIC_SUBNET public: enable public IPs and route to IGW
+aws ec2 modify-subnet-attribute --subnet-id "$PUBLIC_SUBNET" --map-public-ip-on-launch
+RTB_PUBLIC=$(aws ec2 create-route-table --vpc-id "$VPC_ID" --query 'RouteTable.RouteTableId' --output text)
+aws ec2 create-route --route-table-id "$RTB_PUBLIC" --destination-cidr-block 0.0.0.0/0 --gateway-id "$IGW_ID"
+aws ec2 associate-route-table --route-table-id "$RTB_PUBLIC" --subnet-id "$PUBLIC_SUBNET"
+echo "Public RT: $RTB_PUBLIC"
+
+# 3) Create NAT in the public subnet
+EIP_ALLOC=$(aws ec2 allocate-address --domain vpc --query 'AllocationId' --output text)
+echo "EIP: $EIP_ALLOC"
+NAT_ID=$(aws ec2 create-nat-gateway --subnet-id "$PUBLIC_SUBNET" --allocation-id "$EIP_ALLOC" --query 'NatGateway.NatGatewayId' --output text)
+echo "NAT: $NAT_ID"
+aws ec2 wait nat-gateway-available --nat-gateway-ids "$NAT_ID"
+
+# 4) Point each private subnet's route table default route to the NAT
+for SN in "${PRIVATE_SUBNETS[@]}"; do
+  RT_ID=$(aws ec2 describe-route-tables --filters Name=association.subnet-id,Values="$SN" --query 'RouteTables[0].RouteTableId' --output text)
+  echo "Subnet $SN -> route table $RT_ID"
+  if ! aws ec2 replace-route --route-table-id "$RT_ID" --destination-cidr-block 0.0.0.0/0 --nat-gateway-id "$NAT_ID" 2>/dev/null; then
+    aws ec2 create-route --route-table-id "$RT_ID" --destination-cidr-block 0.0.0.0/0 --nat-gateway-id "$NAT_ID"
+  fi
+done
+
+echo "NAT egress configured."
+```
+
+Then redeploy ECS:
+```bash
+aws ecs update-service \
+  --cluster OCR \
+  --service ocr-service-qu9kzscy \
   --force-new-deployment
 ```

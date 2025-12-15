@@ -20,6 +20,14 @@
 - SOF mapping/admin: Added Super Admin mapper page with DB-backed canonical events, edit/delete/import/export, unmapped labels capture/export, and seeded canonical enum list in migrations `027/028`. Timeline events show original SOF text with mapped tags.
 - Laytime workspace: Timeline selection now uses two-click start/end with mapped-event picker and comment; manual spans create single additions/deductions and feed totals (used/over-under/despatch/demurrage). Events with start/end are split into start/end rows for precise anchoring.
 - Attachments panel moved to sit directly below Claim Details; Add Event form now above the SOF timeline and defaults to 100% rate (percent is chosen in the selection modal instead).
+- OCR service (AWS deployment current status):
+  - Service: FastAPI + PaddleOCR with optional Textract backend (`USE_TEXTRACT=true`, `TEXTRACT_REGION=eu-north-1`).
+  - Image: `516466084656.dkr.ecr.eu-north-1.amazonaws.com/zouheir/sof-ocr:latest`.
+  - Task definition: `ocr:9` with taskRole `arn:aws:iam::516466084656:role/ocr-textract-task-role` (Textract) and executionRole `arn:aws:iam::516466084656:role/ocr-task-exec` (ECR/Logs).
+  - Network: VPC `vpc-0b90354817269a8ec`; tasks in subnets `subnet-0a297c25f1fe3e612`, `subnet-0779f8b1e02bc908d` (NAT-routed). NAT Gateway `nat-08d5e72e712696dad`. SG `sg-0923c68c0c42bb5fb` (8000 allowed within SG; 443 allowed within SG; outbound open). Health check `/health` on port 8000.
+  - Endpoints: ECR API `vpce-0634ae40ff196c0f8`, ECR DKR `vpce-0a2e45d16453f79ef` (private DNS enabled), S3 gateway `vpce-0a2df70a94b949172` on RTs `rtb-088c8cb2e34570203`, `rtb-08e67093a29ddb456`.
+  - Logging: Log group `/ecs/ocr` (retention 14d). CloudWatch Logs access via NAT.
+  - Status: `/health` returning 200; tasks stable after network/role/endpoint fixes.
 - Parser fixes (latest): date+time found on the same line now populate from/to directly and set date context; date-only lines seed the context; tabular date+time then description on next line still merges. Header card now has an Edit dialog to tweak port/terminal/vessel/IMO/cargo/laycan before applying.
 - Laytime summary helper: factored shared `buildStatementSnapshot` into `src/lib/laytime-summary.ts` and calculation page now consumes it (same logic, reusable for tests and future statement renders). If there are zero events/additions/deductions, Used time now defaults to the full laytime window; additions still correctly extend used time (no clamping when they exceed deductions). Laytime span now uses a “naive” date diff (ignores timezone offsets) to match the user-entered start/end values exactly. Auto deductions from events are currently disabled; only manual deductions/additions affect used time.
 - SOF mapping: expanded canonical keywords (pilot station arrival variants, richer cargo ops start/stop/resume) to improve matches on noisy PDFs.
