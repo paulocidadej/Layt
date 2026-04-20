@@ -19,9 +19,19 @@ const BUCKET = "claim-attachments";
 async function ensureBucket(supabase: ReturnType<typeof createServerClient>) {
   const { data: bucket } = await supabase.storage.getBucket(BUCKET);
   if (!bucket) {
-    await supabase.storage.createBucket(BUCKET, { public: true });
-  } else if (!bucket.public) {
-    await supabase.storage.updateBucket(BUCKET, { public: true });
+    await supabase.storage.createBucket(BUCKET, { public: false });
+  } else if (bucket.public) {
+    await supabase.storage.updateBucket(BUCKET, { public: false });
+  }
+}
+
+function extractStoragePath(fileUrl: string) {
+  const match = fileUrl.match(/claim-attachments\/([^?]+)/);
+  if (!match || !match[1]) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
   }
 }
 
@@ -52,19 +62,11 @@ export async function GET(_req: Request, { params }: { params: { claimId: string
     (data || []).map(async (att) => {
       if (!signer || !att.file_url) return att;
       // Robust path extraction: look for ".../claim-attachments/<path>"
-      let path: string | null = null;
-      try {
-        const match = att.file_url.match(/claim-attachments\/(.+)$/);
-        if (match && match[1]) {
-          path = decodeURIComponent(match[1]);
-        }
-      } catch {
-        path = null;
-      }
+      const path = extractStoragePath(att.file_url);
       if (!path) return att;
       const { data: signed, error: signErr } = await signer.storage.from(BUCKET).createSignedUrl(path, 60 * 60); // 1 hour
       if (signErr || !signed?.signedUrl) return att;
-      return { ...att, signed_url: signed.signedUrl };
+      return { ...att, signed_url: signed.signedUrl, file_url: signed.signedUrl };
     })
   );
 
@@ -120,6 +122,17 @@ export async function POST(req: Request, { params }: { params: { claimId: string
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const signer = serviceKey && supabaseUrl ? createClient(supabaseUrl, serviceKey) : null;
+  let attachment = data;
+  if (signer) {
+    const { data: signed, error: signErr } = await signer.storage.from(BUCKET).createSignedUrl(storagePath, 60 * 60);
+    if (!signErr && signed?.signedUrl) {
+      attachment = { ...data, signed_url: signed.signedUrl, file_url: signed.signedUrl };
+    }
+  }
+
   // Notify assigned reviewer
   let notifyMeta: { ok: boolean; error?: string } | null = null;
   try {
@@ -146,7 +159,7 @@ export async function POST(req: Request, { params }: { params: { claimId: string
     notifyMeta = { ok: false, error: errMsg };
   }
 
-  return NextResponse.json({ attachment: data }, { status: 201 });
+  return NextResponse.json({ attachment }, { status: 201 });
 }
 
 export async function DELETE(req: Request, { params }: { params: { claimId: string } }) {
@@ -174,12 +187,9 @@ export async function DELETE(req: Request, { params }: { params: { claimId: stri
   // Try deleting file (ignore errors)
   // Try to derive path from stored public URL
   const url = attachment.file_url || "";
-  const idx = url.indexOf(`${BUCKET}/`);
-  if (idx !== -1) {
-    const path = url.substring(idx + BUCKET.length + 1);
-    if (path) {
-      await supabase.storage.from(BUCKET).remove([path]);
-    }
+  const path = extractStoragePath(url);
+  if (path) {
+    await supabase.storage.from(BUCKET).remove([path]);
   }
   await supabase.from("claim_attachments").delete().eq("id", id);
   return NextResponse.json({ ok: true });

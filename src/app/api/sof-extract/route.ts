@@ -1,6 +1,8 @@
 import { normalizeSofPayload, RawSofOcrResponse } from "@/lib/sof-parser";
 import { NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,6 +13,10 @@ const MAX_TIMEOUT_MS = 295_000; // slightly under 300s to stay within limit
 const DEFAULT_OCR_ENDPOINT = "http://localhost:8000/extract";
 
 export async function POST(req: Request) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const envEndpoint = process.env.SOF_OCR_ENDPOINT || process.env.NEXT_PUBLIC_SOF_OCR_ENDPOINT || "";
   const endpoint = envEndpoint || DEFAULT_OCR_ENDPOINT;
   const target = endpoint.includes("/extract") ? endpoint : `${endpoint.replace(/\/+$/, "")}/extract`;

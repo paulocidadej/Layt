@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 type Calc = { id: string; voyage_id: string; status: string; calculation_method: string; created_at: string };
 type Voyage = { id: string; voyage_reference: string };
-type CP = { id: string; cp_number?: string | null; voyage_id: string };
+type CP = { id: string; name?: string | null; voyage_id: string };
 type Cargo = { id: string; cargo_name: string; voyage_id: string; quantity?: number | null; unit?: string | null };
 
 export default function LaytimeListClient({

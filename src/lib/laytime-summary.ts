@@ -32,6 +32,7 @@ export type LaytimeClaim = {
     allowed_hours?: number | null;
     sequence?: number | null;
   }[];
+  clause_profile?: any;
   [key: string]: any;
 };
 
@@ -59,6 +60,40 @@ export function buildStatementSnapshot({
   manualDeductions?: LaytimeEvent[];
   manualAdditions?: LaytimeEvent[];
 }) {
+  type WorkingTimeDefinition = "SHEX" | "SHINC" | "WWD" | "CUSTOM";
+  type NorStartTrigger = "NOR_TENDERED" | "NOR_ACCEPTED" | "CUSTOM_DATE";
+  type RoundingRule = "EXACT" | "ROUND_UP_HOUR" | "ROUND_DOWN_HOUR";
+  type CountBehavior = "FULL" | "HALF" | "NONE" | { percent: number };
+
+  const resolveClauseProfile = (input: LaytimeClaim) => {
+    const profile = input.clause_profile || {};
+    const rawWorking = (profile.workingTimeDefinition || input.turn_time_method || "SHINC").toString().toUpperCase();
+    const workingTimeDefinition: WorkingTimeDefinition =
+      rawWorking === "SHEX" || rawWorking === "SHINC" || rawWorking === "WWD" || rawWorking === "CUSTOM"
+        ? (rawWorking as WorkingTimeDefinition)
+        : "SHINC";
+    const roundingRule: RoundingRule =
+      profile.roundingRule === "ROUND_UP_HOUR" || profile.roundingRule === "ROUND_DOWN_HOUR"
+        ? profile.roundingRule
+        : "EXACT";
+    const norStartTrigger: NorStartTrigger =
+      profile.norStartTrigger === "NOR_ACCEPTED" || profile.norStartTrigger === "CUSTOM_DATE"
+        ? profile.norStartTrigger
+        : "NOR_TENDERED";
+    const holidayWindows = Array.isArray(profile.holidayWindows) ? profile.holidayWindows : [];
+    return {
+      workingTimeDefinition,
+      roundingRule,
+      norStartTrigger,
+      norOffsetHours: Number(profile.norOffsetHours || 0),
+      startNextWorkingPeriod: !!profile.startNextWorkingPeriod,
+      defaultCountRules: (profile.defaultCountRules || {}) as Record<string, CountBehavior>,
+      holidayWindows,
+      customNorDate: profile.customNorDate || null,
+    };
+  };
+
+  const clauseProfile = resolveClauseProfile(claim);
   const toNaiveUtc = (value?: string | null) => {
     if (!value) return NaN;
     const m = value.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?/);
@@ -67,6 +102,104 @@ export function buildStatementSnapshot({
       return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), s ? Number(s) : 0);
     }
     return new Date(value).getTime();
+  };
+
+  const isWeekend = (date: Date) => {
+    const day = date.getUTCDay();
+    return day === 0 || day === 6;
+  };
+
+  const overlapMinutes = (aStart: Date, aEnd: Date, bStart: Date, bEnd: Date) => {
+    const start = Math.max(aStart.getTime(), bStart.getTime());
+    const end = Math.min(aEnd.getTime(), bEnd.getTime());
+    if (end <= start) return 0;
+    return (end - start) / 60000;
+  };
+
+  const isNonWorkingDay = (date: Date) => {
+    if (clauseProfile.workingTimeDefinition !== "SHEX" && clauseProfile.workingTimeDefinition !== "WWD") {
+      return false;
+    }
+    if (isWeekend(date)) return true;
+    if (!clauseProfile.holidayWindows || clauseProfile.holidayWindows.length === 0) return false;
+    const dayStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0);
+    const dayEnd = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 23, 59, 59, 999);
+    return clauseProfile.holidayWindows.some((h) => {
+      const hStart = toNaiveUtc(h.start);
+      const hEnd = toNaiveUtc(h.end);
+      if (Number.isNaN(hStart) || Number.isNaN(hEnd)) return false;
+      return overlapMinutes(new Date(dayStart), new Date(dayEnd), new Date(hStart), new Date(hEnd)) > 0;
+    });
+  };
+
+  const shiftToNextWorkingStart = (startMs: number) => {
+    let cursor = new Date(startMs);
+    cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), cursor.getUTCDate(), 0, 0, 0, 0));
+    while (isNonWorkingDay(cursor)) {
+      cursor = new Date(cursor.getTime() + 24 * 60 * 60 * 1000);
+    }
+    return cursor.getTime();
+  };
+
+  const computeWorkingMinutes = (startMs: number, endMs: number) => {
+    if (endMs <= startMs) return 0;
+    if (clauseProfile.workingTimeDefinition === "SHINC" || clauseProfile.workingTimeDefinition === "CUSTOM") {
+      return (endMs - startMs) / 60000;
+    }
+    let total = 0;
+    let cursor = new Date(startMs);
+    cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), cursor.getUTCDate(), 0, 0, 0, 0));
+    const endDay = new Date(endMs);
+    const endDayStart = new Date(Date.UTC(endDay.getUTCFullYear(), endDay.getUTCMonth(), endDay.getUTCDate(), 0, 0, 0, 0));
+    while (cursor <= endDayStart) {
+      const dayStart = new Date(cursor);
+      const dayEnd = new Date(cursor.getTime() + 24 * 60 * 60 * 1000);
+      const segmentStart = Math.max(startMs, dayStart.getTime());
+      const segmentEnd = Math.min(endMs, dayEnd.getTime());
+      if (segmentEnd > segmentStart && !isNonWorkingDay(dayStart)) {
+        let minutes = (segmentEnd - segmentStart) / 60000;
+        for (const h of clauseProfile.holidayWindows || []) {
+          const hStart = toNaiveUtc(h.start);
+          const hEnd = toNaiveUtc(h.end);
+          if (Number.isNaN(hStart) || Number.isNaN(hEnd)) continue;
+          minutes -= overlapMinutes(new Date(segmentStart), new Date(segmentEnd), new Date(hStart), new Date(hEnd));
+        }
+        total += Math.max(minutes, 0);
+      }
+      cursor = new Date(cursor.getTime() + 24 * 60 * 60 * 1000);
+    }
+    return total;
+  };
+
+  const resolveCountBehavior = (name?: string | null, rate?: number | null): CountBehavior | null => {
+    if (rate !== null && rate !== undefined) {
+      return { percent: rate };
+    }
+    if (!name) return null;
+    const key = name.toLowerCase().trim();
+    const rules = clauseProfile.defaultCountRules || {};
+    if (rules[key] !== undefined) {
+      const rule = rules[key];
+      if (typeof rule === "number") return { percent: rule };
+      return rule;
+    }
+    return null;
+  };
+
+  const eventHours = (ev: LaytimeEvent) => {
+    if (ev.time_used !== null && ev.time_used !== undefined) return ev.time_used || 0;
+    const start = toNaiveUtc(ev.from_datetime);
+    const end = toNaiveUtc(ev.to_datetime);
+    if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return 0;
+    const rawMinutes = computeWorkingMinutes(start, end);
+    const behavior = resolveCountBehavior(ev.deduction_name, ev.rate_of_calculation ?? null);
+    if (!behavior || behavior === "FULL") return rawMinutes / 60;
+    if (behavior === "NONE") return 0;
+    if (behavior === "HALF") return rawMinutes / 60 * 0.5;
+    if (typeof behavior === "object" && behavior.percent !== undefined) {
+      return (rawMinutes / 60) * (Number(behavior.percent) / 100);
+    }
+    return rawMinutes / 60;
   };
 
   const scopeAllows = (activity?: string | null) => {
@@ -107,8 +240,8 @@ export function buildStatementSnapshot({
   };
 
   // Auto deductions from events are currently disabled; we rely on manual deductions/additions only.
-  scopedManualDeductions.forEach((ev) => addHours(ev.port_call_id || "unassigned", ev.time_used || 0));
-  scopedManualAdditions.forEach((ev) => addHours(ev.port_call_id || "unassigned", -(ev.time_used || 0)));
+  scopedManualDeductions.forEach((ev) => addHours(ev.port_call_id || "unassigned", eventHours(ev)));
+  scopedManualAdditions.forEach((ev) => addHours(ev.port_call_id || "unassigned", -eventHours(ev)));
 
   const totalDeductionsAll = Math.max(
     Object.values(deductionsByPort).reduce((a, b) => a + (b || 0), 0),
@@ -116,14 +249,20 @@ export function buildStatementSnapshot({
   );
 
   const baseSpanHours = (() => {
-    if (laytimeStart && laytimeEnd) {
-      const start = toNaiveUtc(laytimeStart);
-      const end = toNaiveUtc(laytimeEnd);
-      if (!Number.isNaN(start) && !Number.isNaN(end) && end > start) {
-        return (end - start) / 3600000;
+    let start = laytimeStart ? toNaiveUtc(laytimeStart) : NaN;
+    let end = laytimeEnd ? toNaiveUtc(laytimeEnd) : NaN;
+    if (Number.isNaN(start) && claim.nor_tendered_at) {
+      const nor = toNaiveUtc(claim.nor_tendered_at);
+      if (!Number.isNaN(nor)) {
+        start = nor + (clauseProfile.norOffsetHours || 0) * 3600000;
+        if (clauseProfile.startNextWorkingPeriod) {
+          start = shiftToNextWorkingStart(start);
+        }
       }
     }
-    return 0;
+    if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return 0;
+    const minutes = computeWorkingMinutes(start, end);
+    return minutes / 60;
   })();
 
   const scopedSiblings = siblings.filter((s) => scopeAllows(s.activity));
@@ -163,7 +302,12 @@ export function buildStatementSnapshot({
     return Math.max(totalDeductionsAll, 0);
   })();
   const onceOnDemurrage = baseSpanHours > 0 && totalAllowed !== null && totalAllowed >= 0 && baseSpanHours > totalAllowed;
-  const usedWithRule = onceOnDemurrage ? baseSpanHours : fallbackUsed;
+  let usedWithRule = onceOnDemurrage ? baseSpanHours : fallbackUsed;
+  if (clauseProfile.roundingRule === "ROUND_UP_HOUR") {
+    usedWithRule = Math.ceil(usedWithRule);
+  } else if (clauseProfile.roundingRule === "ROUND_DOWN_HOUR") {
+    usedWithRule = Math.floor(usedWithRule);
+  }
 
   const totalUsed = claim.reversible
     ? effectiveSiblings.length > 0

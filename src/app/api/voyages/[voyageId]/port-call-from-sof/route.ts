@@ -37,6 +37,8 @@ export async function POST(req: Request, { params }: { params: { voyageId: strin
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  let createdPortCallId: string | null = null;
+  let createdClaimId: string | null = null;
   try {
     const body = await req.json();
     const summary = body?.summary || {};
@@ -72,9 +74,10 @@ export async function POST(req: Request, { params }: { params: { voyageId: strin
       console.error("voyage port-call-from-sof insert error", pcError);
       return NextResponse.json({ error: pcError?.message || "Failed to create port call" }, { status: 500 });
     }
+    createdPortCallId = portCall.id;
 
     // Auto-create a draft claim for this port call so events can be stored
-    const claimRef = `SOF-${Date.now() % 100000}`;
+    const claimRef = `SOF-${crypto.randomUUID()}`;
     const claimPayload: Record<string, any> = {
       claim_reference: claimRef,
       tenant_id: voyageAny.tenant_id,
@@ -92,6 +95,7 @@ export async function POST(req: Request, { params }: { params: { voyageId: strin
       console.error("voyage port-call-from-sof claim insert error", claimErr);
       return NextResponse.json({ error: claimErr?.message || "Failed to create claim for port call" }, { status: 500 });
     }
+    createdClaimId = claim.id;
 
     // Insert calculation events tied to the new claim/port call
     const rows: any[] = [];
@@ -126,6 +130,13 @@ export async function POST(req: Request, { params }: { params: { voyageId: strin
 
     return NextResponse.json({ port_call: portCall, claim, events: savedEvents });
   } catch (e: any) {
+    if (createdClaimId) {
+      await supabase.from("calculation_events").delete().eq("claim_id", createdClaimId);
+      await supabase.from("claims").delete().eq("id", createdClaimId);
+    }
+    if (createdPortCallId) {
+      await supabase.from("port_calls").delete().eq("id", createdPortCallId);
+    }
     console.error("POST /voyages/[voyageId]/port-call-from-sof error", e);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }

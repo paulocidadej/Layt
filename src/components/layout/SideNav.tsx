@@ -39,6 +39,13 @@ export function SideNav() {
             <p className="hidden md:block">Claims</p>
           </Link>
           <Link
+            href="/claims/contracts"
+            className="flex h-[48px] grow items-center justify-center gap-2 rounded-md bg-gray-50 p-3 text-sm font-medium hover:bg-sky-100 hover:text-blue-600 md:flex-none md:justify-start md:p-2 md:px-3"
+          >
+            <FileText className="w-6" />
+            <p className="hidden md:block">Contracts/CPs</p>
+          </Link>
+          <Link
             href="/data"
             className="flex h-[48px] grow items-center justify-center gap-2 rounded-md bg-gray-50 p-3 text-sm font-medium hover:bg-sky-100 hover:text-blue-600 md:flex-none md:justify-start md:p-2 md:px-3"
           >

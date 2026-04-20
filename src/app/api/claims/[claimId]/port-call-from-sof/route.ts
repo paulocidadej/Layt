@@ -48,6 +48,7 @@ export async function POST(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  let createdPortCallId: string | null = null;
   try {
     const body = await req.json();
     const summary = body?.summary || {};
@@ -93,6 +94,7 @@ export async function POST(
       console.error("port-call-from-sof insert error", pcError);
       return NextResponse.json({ error: pcError?.message || "Failed to create port call" }, { status: 500 });
     }
+    createdPortCallId = portCall.id;
 
     // Attach new port call to claim
     await supabase
@@ -134,6 +136,10 @@ export async function POST(
 
     return NextResponse.json({ port_call: portCall, events: insertedEvents });
   } catch (e: any) {
+    if (createdPortCallId) {
+      await supabase.from("calculation_events").delete().eq("port_call_id", createdPortCallId);
+      await supabase.from("port_calls").delete().eq("id", createdPortCallId);
+    }
     console.error("POST /port-call-from-sof error", e);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }

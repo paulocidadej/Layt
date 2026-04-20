@@ -68,17 +68,20 @@ type Claim = {
   laytime_start?: string | null;
   laytime_end?: string | null;
   nor_tendered_at?: string | null;
+  nor_accepted_at?: string | null;
   loading_start_at?: string | null;
   loading_end_at?: string | null;
   turn_time_method?: string | null;
+  clause_profile?: any;
+  cp_id?: string | null;
   voyages?: {
     cargo_quantity?: number | null;
     cargo_names?: { name?: string | null } | null;
     charter_parties?: { name?: string | null } | null;
   } | null;
   term_id?: string | null;
-  terms?: { name?: string | null } | null;
   port_calls?: { id: string; port_name?: string | null; activity?: string | null; sequence?: number | null; allowed_hours?: number | null }[] | null;
+  contract_label?: string | null;
 };
 
 type EventRow = {
@@ -192,6 +195,42 @@ const toInputValue = (value?: string | null) => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
+function deriveLaytimeStartFromClause({
+  baseValue,
+  working,
+  norOffset,
+  startNextWorkingPeriod,
+  holidayWindows,
+}: {
+  baseValue?: string | null;
+  working: string;
+  norOffset: number;
+  startNextWorkingPeriod: boolean;
+  holidayWindows: { start: string; end: string }[];
+}) {
+  if (!baseValue) return null;
+  const base = new Date(baseValue);
+  if (Number.isNaN(base.getTime())) return null;
+  let start = new Date(base.getTime() + norOffset * 60 * 60 * 1000);
+  if (!startNextWorkingPeriod) return start.toISOString();
+  const isWeekend = (d: Date) => d.getUTCDay() === 0 || d.getUTCDay() === 6;
+  const inHoliday = (d: Date) => {
+    if (holidayWindows.length === 0) return false;
+    const dayStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0);
+    const dayEnd = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999);
+    return holidayWindows.some((h) => {
+      const hs = new Date(h.start).getTime();
+      const he = new Date(h.end).getTime();
+      if (Number.isNaN(hs) || Number.isNaN(he)) return false;
+      return Math.max(dayStart, hs) <= Math.min(dayEnd, he);
+    });
+  };
+  while (working === "SHEX" && (isWeekend(start) || inHoliday(start))) {
+    start = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  }
+  return start.toISOString();
+}
+
 function AddEventForm({
   onAdd,
   onUpdate,
@@ -200,6 +239,7 @@ function AddEventForm({
   loading,
   portCalls,
   claimPortCallId,
+  countRules,
 }: {
   onAdd: (payload: Omit<EventRow, "id" | "time_used">) => Promise<void>;
   onUpdate: (id: string, payload: Omit<EventRow, "id" | "time_used">) => Promise<void>;
@@ -208,12 +248,28 @@ function AddEventForm({
   loading: boolean;
   portCalls: { id: string; port_name: string; activity?: string | null }[];
   claimPortCallId?: string | null;
+  countRules?: Record<string, any>;
 }) {
   const [deduction, setDeduction] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [portCallId, setPortCallId] = useState<string>("none");
+  const [ratePercent, setRatePercent] = useState<number>(100);
+
+  const normalizeRuleToPercent = (rule: any) => {
+    if (!rule || rule === "FULL") return 100;
+    if (rule === "HALF") return 50;
+    if (rule === "NONE") return 0;
+    if (typeof rule === "number") {
+      return Number.isFinite(rule) ? rule : 100;
+    }
+    if (typeof rule === "object" && rule.percent !== undefined) {
+      const p = Number(rule.percent);
+      return Number.isFinite(p) ? p : 100;
+    }
+    return 100;
+  };
 
   useEffect(() => {
     if (editing) {
@@ -221,14 +277,28 @@ function AddEventForm({
       setFrom(toInputValue(editing.from_datetime));
       setTo(toInputValue(editing.to_datetime));
       setPortCallId(editing.port_call_id || "none");
+      setRatePercent(editing.rate_of_calculation ?? 100);
     } else {
       setDeduction("");
       setFrom("");
       setTo("");
       setPortCallId("none");
+      setRatePercent(100);
       if (claimPortCallId) setPortCallId(claimPortCallId);
     }
   }, [editing, claimPortCallId]);
+
+  useEffect(() => {
+    if (!deduction || editing) return;
+    const key = deduction.toLowerCase().trim();
+    let rule = countRules?.[key];
+    if (!rule && countRules) {
+      const matchKey = Object.keys(countRules).find((k) => key.includes(k));
+      if (matchKey) rule = countRules[matchKey];
+    }
+    if (!rule) return;
+    setRatePercent((prev) => (prev === 100 ? normalizeRuleToPercent(rule) : prev));
+  }, [deduction, countRules, editing]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -242,7 +312,7 @@ function AddEventForm({
         deduction_name: deduction,
         from_datetime: from,
         to_datetime: to,
-        rate_of_calculation: editing.rate_of_calculation ?? 100,
+        rate_of_calculation: ratePercent,
         port_call_id: portCallId === "none" ? null : portCallId,
       });
     } else {
@@ -250,7 +320,7 @@ function AddEventForm({
         deduction_name: deduction,
         from_datetime: from,
         to_datetime: to,
-        rate_of_calculation: 100,
+        rate_of_calculation: ratePercent,
         port_call_id: portCallId === "none" ? null : portCallId,
       });
     }
@@ -258,7 +328,7 @@ function AddEventForm({
 
   return (
     <div className="p-4 border border-blue-100 shadow-sm bg-white rounded-xl">
-      <form onSubmit={handleSubmit} className="grid md:grid-cols-5 gap-3 items-end">
+      <form onSubmit={handleSubmit} className="grid md:grid-cols-6 gap-3 items-end">
         <div className="space-y-1 md:col-span-2">
           <Label>Event</Label>
           <Input
@@ -299,6 +369,16 @@ function AddEventForm({
             type="datetime-local"
             value={to}
             onChange={(e) => setTo(e.target.value)}
+          />
+        </div>
+        <div className="space-y-1">
+          <Label>Count %</Label>
+          <Input
+            type="number"
+            min={0}
+            max={100}
+            value={ratePercent}
+            onChange={(e) => setRatePercent(Number(e.target.value || 0))}
           />
         </div>
         <div className="flex items-center gap-2">
@@ -765,6 +845,64 @@ function StatementView({
   manualAdditions?: EventRow[];
 }) {
   const snapshot = buildStatementSnapshot({ claim: claim as any, events, siblings, manualDeductions, manualAdditions });
+  const clauseSummary = useMemo(() => {
+    const raw = (claim.clause_profile || {}) as any;
+    const working = (raw.workingTimeDefinition || "SHINC").toString().toUpperCase();
+    const norOffset = Number(raw.norOffsetHours || 0);
+    const norStartTrigger = raw.norStartTrigger || "NOR_TENDERED";
+    const rounding = raw.roundingRule || "EXACT";
+    const rules = raw.defaultCountRules || {};
+    const normalizePercent = (value: any) => {
+      if (value === "FULL") return 100;
+      if (value === "HALF") return 50;
+      if (value === "NONE") return 0;
+      if (typeof value === "number") return Number.isFinite(value) ? value : 100;
+      if (typeof value === "object" && value?.percent !== undefined) {
+        const p = Number(value.percent);
+        return Number.isFinite(p) ? p : 100;
+      }
+      return 100;
+    };
+    const weather = normalizePercent(rules.weather);
+    const shiftGear = normalizePercent(rules["gear delay"] ?? rules["shift gear"]);
+    const breakdown = normalizePercent(rules["vessel breakdown"] ?? rules.breakdown);
+    const shiftChange = normalizePercent(rules["shift change"]);
+    const customStoppage = normalizePercent(rules["custom stoppage"]);
+    return {
+      working,
+      norOffset,
+      norStartTrigger,
+      rounding,
+      weather,
+      shiftGear,
+      breakdown,
+      shiftChange,
+      customStoppage,
+      startNextWorkingPeriod: !!raw.startNextWorkingPeriod,
+    };
+  }, [claim.clause_profile]);
+  const holidayWindows = useMemo(() => {
+    const raw = (claim.clause_profile || {}) as any;
+    return Array.isArray(raw.holidayWindows) ? raw.holidayWindows : [];
+  }, [claim.clause_profile]);
+  const deriveLaytimeStart = () => {
+    const baseValue =
+      clauseSummary.norStartTrigger === "NOR_ACCEPTED"
+        ? claim.nor_accepted_at || claim.nor_tendered_at
+        : claim.nor_tendered_at;
+    return deriveLaytimeStartFromClause({
+      baseValue,
+      working: clauseSummary.working,
+      norOffset: clauseSummary.norOffset,
+      startNextWorkingPeriod: clauseSummary.startNextWorkingPeriod,
+      holidayWindows,
+    });
+  };
+  const derivedStart = useMemo(
+    () => deriveLaytimeStart(),
+    [claim.nor_tendered_at, claim.nor_accepted_at, clauseSummary, holidayWindows]
+  );
+  const displayStart = claim.laytime_start || derivedStart || null;
   const getTs = (val?: string | null) => (val ? new Date(val).getTime() : 0);
   const sortedEvents = [...snapshot.scopedEvents].sort(
     (a, b) => getTs(a.from_datetime) - getTs(b.from_datetime)
@@ -781,6 +919,38 @@ function StatementView({
           <p className="text-xs text-slate-600">
             {claim.claim_reference} · {claim.port_name || "Port"} · {claim.operation_type || "operation"}
           </p>
+          <div className="flex flex-wrap gap-2 mt-2">
+            <span className="text-[11px] px-2 py-0.5 rounded-full border border-slate-300 bg-slate-100 text-slate-700 font-semibold">
+              Clause Rules Summary
+            </span>
+            <span className="text-[11px] px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
+              {clauseSummary.working}
+            </span>
+            <span className="text-[11px] px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
+              NOR: {clauseSummary.norStartTrigger === "NOR_ACCEPTED" ? "Accepted" : "Tendered"}
+            </span>
+            <span className="text-[11px] px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
+              NOR +{clauseSummary.norOffset}h
+            </span>
+            <span className="text-[11px] px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
+              {clauseSummary.rounding}
+            </span>
+            <span className="text-[11px] px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
+              Weather: {clauseSummary.weather}%
+            </span>
+            <span className="text-[11px] px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
+              Shift Gear: {clauseSummary.shiftGear}%
+            </span>
+            <span className="text-[11px] px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
+              Breakdown: {clauseSummary.breakdown}%
+            </span>
+            <span className="text-[11px] px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
+              Shift Change: {clauseSummary.shiftChange}%
+            </span>
+            <span className="text-[11px] px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600">
+              Custom Stoppage: {clauseSummary.customStoppage}%
+            </span>
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="outline">Save Draft</Button>
@@ -839,10 +1009,18 @@ function StatementView({
           <p className="text-xs text-slate-600">Reversible: {claim.reversible ? `Yes (${claim.reversible_scope || "all ports"})` : "No"}</p>
         </div>
         <div className="p-4 rounded-xl border border-slate-100 bg-white shadow-sm space-y-1">
-          <p className="text-xs font-semibold text-slate-600">Terms</p>
-          <p className="text-sm text-slate-900">Term: {claim.terms?.name || "Not set"}</p>
+          <p className="text-xs font-semibold text-slate-600">Contract / CP</p>
+          <p className="text-sm text-slate-900">
+            {claim.contract_label || (claim.cp_id ? `CP ${claim.cp_id.slice(0, 8)}` : "Not set")}
+          </p>
+          <p className="text-xs text-slate-600">
+            NOR trigger: {clauseSummary.norStartTrigger === "NOR_ACCEPTED" ? "Accepted" : "Tendered"}
+          </p>
           <p className="text-xs text-slate-600">Allowed basis: {snapshot.fallbackAllowed > 0 ? "Cargo/rate fallback" : "Port call allowed hours"}</p>
           <p className="text-xs text-slate-600">Laytime span: {formatHours(snapshot.baseSpanHours, timeFormat)}</p>
+          <div className="flex items-center gap-2 text-xs text-slate-600">
+            <span>Laytime start: {displayStart ? formatDate(displayStart) : "—"}</span>
+          </div>
         </div>
         <div className="p-4 rounded-xl border border-slate-100 bg-white shadow-sm space-y-1">
           <p className="text-xs font-semibold text-slate-600">Parties & cargo</p>
@@ -941,7 +1119,7 @@ function StatementView({
               <ul className="text-sm text-slate-700 list-disc ml-4 space-y-1">
                 {sofFiles.map((f) => (
                   <li key={f.id}>
-                    <a className="text-ocean-700" href={f.file_url} target="_blank" rel="noreferrer">
+                    <a className="text-ocean-700" href={(f as any).signed_url || f.file_url} target="_blank" rel="noreferrer">
                       {f.filename}
                     </a>
                   </li>
@@ -957,7 +1135,7 @@ function StatementView({
               <ul className="text-sm text-slate-700 list-disc ml-4 space-y-1">
                 {norFiles.map((f) => (
                   <li key={f.id}>
-                    <a className="text-ocean-700" href={f.file_url} target="_blank" rel="noreferrer">
+                    <a className="text-ocean-700" href={(f as any).signed_url || f.file_url} target="_blank" rel="noreferrer">
                       {f.filename}
                     </a>
                   </li>
@@ -1095,7 +1273,7 @@ export default function CalculationPage({ params }: { params: { claimId: string 
   const [claimForm, setClaimForm] = useState<Partial<Claim>>({});
   const [cargoQty, setCargoQty] = useState<number | null>(null);
   const [events, setEvents] = useState<EventRow[]>([]);
-  const [terms, setTerms] = useState<{ id: string; name: string }[]>([]);
+  const [contracts, setContracts] = useState<{ id: string; name?: string | null; cp_number?: string | null; clause_profile?: any }[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [audit, setAudit] = useState<AuditRow[]>([]);
   const [portCalls, setPortCalls] = useState<{ id: string; port_name: string; activity?: string | null }[]>([]);
@@ -1200,7 +1378,13 @@ export default function CalculationPage({ params }: { params: { claimId: string 
         setDeductionEvents(manualDeds);
         persistSelections(manualDeds, manualAdds, { ...selectionNotes, ...notes });
         setEvents(base);
-        if (json.terms) setTerms(json.terms);
+        try {
+          const contractsRes = await fetch("/api/contracts");
+          const contractsJson = await contractsRes.json();
+          if (contractsRes.ok) setContracts(contractsJson.contracts || []);
+        } catch {
+          setContracts([]);
+        }
         if (json.audit) setAudit(json.audit);
         if (json.claim?.port_calls) setPortCalls(json.claim.port_calls);
         if (json.sibling_summaries) setSiblings(json.sibling_summaries);
@@ -1512,6 +1696,34 @@ export default function CalculationPage({ params }: { params: { claimId: string 
     setClaimForm((prev) => ({ ...prev, [field]: value }));
   };
 
+  const clauseProfile = useMemo(() => {
+    const raw = (claimForm.clause_profile ?? claim?.clause_profile ?? {}) as any;
+    return {
+      workingTimeDefinition: raw.workingTimeDefinition || "SHINC",
+      norStartTrigger: raw.norStartTrigger || "NOR_TENDERED",
+      norOffsetHours: Number(raw.norOffsetHours || 0),
+      startNextWorkingPeriod: !!raw.startNextWorkingPeriod,
+      roundingRule: raw.roundingRule || "EXACT",
+      defaultCountRules: raw.defaultCountRules || {},
+      holidayWindows: raw.holidayWindows || [],
+    };
+  }, [claimForm.clause_profile, claim?.clause_profile]);
+
+  const countRules = useMemo(() => {
+    const rules = clauseProfile.defaultCountRules || {};
+    const normalized: Record<string, any> = {};
+    Object.keys(rules).forEach((k) => {
+      normalized[k.toLowerCase()] = rules[k];
+    });
+    return normalized;
+  }, [clauseProfile.defaultCountRules]);
+
+
+  const selectedContract = useMemo(() => {
+    const cpId = claimForm.cp_id || claim?.cp_id;
+    return contracts.find((c) => c.id === cpId) || null;
+  }, [contracts, claimForm.cp_id, claim?.cp_id]);
+
   const handleStartSelection = (mode: "deduction" | "addition", idx: number) => {
     if (selectionStart !== null && selectionMode === mode) {
       if (selectionStart === idx) {
@@ -1636,13 +1848,14 @@ export default function CalculationPage({ params }: { params: { claimId: string 
     }
   };
 
-  const saveClaimDetails = async () => {
+  const saveClaimDetails = async (overrides?: Partial<Claim>) => {
     if (!claim) return;
     setSavingClaim(true);
     setError(null);
     try {
       const payload = {
         ...claimForm,
+        ...(overrides || {}),
         qc_reviewer_id: claimForm.qc_reviewer_id ? claimForm.qc_reviewer_id : null,
         claim_status: claimForm.claim_status || claim?.claim_status || null,
         // keep qc_status aligned with the single status field for consistency in API/db
@@ -1716,6 +1929,55 @@ export default function CalculationPage({ params }: { params: { claimId: string 
     return 0;
   })();
   const missingLaytimeSpan = !laytimeStart || !laytimeEnd || laytimeSpanHours <= 0;
+  const contractLabel =
+    selectedContract?.cp_number ||
+    selectedContract?.name ||
+    claim.contract_label ||
+    (claim.cp_id ? `CP ${claim.cp_id.slice(0, 8)}` : "");
+
+  const autoCalculateLaytime = async () => {
+    const candidateEvents = enhancedEvents.length > 0 ? enhancedEvents : events;
+    if (candidateEvents.length === 0) {
+      setError("No SOF events available to auto-calculate laytime.");
+      return;
+    }
+    const sorted = [...candidateEvents].sort((a, b) => {
+      const aTime = new Date(a.from_datetime || a.to_datetime || "").getTime();
+      const bTime = new Date(b.from_datetime || b.to_datetime || "").getTime();
+      return aTime - bTime;
+    });
+    const earliest = sorted[0];
+    const latest = [...candidateEvents].sort((a, b) => {
+      const aTime = new Date(a.to_datetime || a.from_datetime || "").getTime();
+      const bTime = new Date(b.to_datetime || b.from_datetime || "").getTime();
+      return bTime - aTime;
+    })[0];
+    const baseValue =
+      clauseProfile.norStartTrigger === "NOR_ACCEPTED"
+        ? claimForm.nor_accepted_at || claim.nor_accepted_at || claimForm.nor_tendered_at || claim.nor_tendered_at
+        : claimForm.nor_tendered_at || claim.nor_tendered_at;
+    const derivedStart = deriveLaytimeStartFromClause({
+      baseValue: baseValue || earliest?.from_datetime || earliest?.to_datetime,
+      working: clauseProfile.workingTimeDefinition || "SHINC",
+      norOffset: Number(clauseProfile.norOffsetHours || 0),
+      startNextWorkingPeriod: !!clauseProfile.startNextWorkingPeriod,
+      holidayWindows: holidayWindows || [],
+    });
+    const derivedEnd = latest?.to_datetime || latest?.from_datetime || null;
+    if (!derivedStart || !derivedEnd) {
+      setError("Auto-calc could not derive laytime start/end from the available events.");
+      return;
+    }
+    const startMs = new Date(derivedStart).getTime();
+    const endMs = new Date(derivedEnd).getTime();
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      setError("Auto-calc found invalid laytime start/end; please review event times.");
+      return;
+    }
+    handleClaimFieldChange("laytime_start", derivedStart);
+    handleClaimFieldChange("laytime_end", derivedEnd);
+    await saveClaimDetails({ laytime_start: derivedStart, laytime_end: derivedEnd });
+  };
 
   return (
     <div className="space-y-6">
@@ -1725,6 +1987,9 @@ export default function CalculationPage({ params }: { params: { claimId: string 
             <h1 className="text-3xl font-bold text-gray-900">
               {claim.claim_reference}
             </h1>
+            {contractLabel && (
+              <p className="text-sm text-slate-700">Contract/CP: {contractLabel}</p>
+            )}
           <div className="flex items-center gap-2 mt-1">
             {qcMeta && (
               <span className={`text-xs px-3 py-1 rounded-full border ${qcBadgeClass}`}>
@@ -1785,13 +2050,18 @@ export default function CalculationPage({ params }: { params: { claimId: string 
             : null}
         </div>
       )}
-      <div className="p-3 border border-slate-200 rounded-lg bg-white flex items-center gap-3">
-        <Button variant="outline" size="sm" onClick={() => setQuickEditOpen((v) => !v)}>
-          {quickEditOpen ? "Close quick edit" : "Quick edit key timings"}
+      <div className="p-3 border border-slate-200 rounded-lg bg-white flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <Button variant="outline" size="sm" onClick={() => setQuickEditOpen((v) => !v)}>
+            {quickEditOpen ? "Close quick edit" : "Quick edit key timings"}
+          </Button>
+          <p className="text-xs text-slate-600">
+            Adjust laytime start/end, NOR, and ops timings quickly; then save to apply.
+          </p>
+        </div>
+        <Button size="sm" onClick={autoCalculateLaytime} disabled={savingClaim}>
+          Auto-calc laytime
         </Button>
-        <p className="text-xs text-slate-600">
-          Adjust laytime start/end, NOR, and ops timings quickly; then save to apply.
-        </p>
       </div>
       {quickEditOpen && (
         <div className="p-4 rounded-lg border border-slate-200 bg-slate-50 grid md:grid-cols-3 gap-3">
@@ -1817,6 +2087,14 @@ export default function CalculationPage({ params }: { params: { claimId: string 
               type="datetime-local"
               value={toInputValue(claimForm.nor_tendered_at ?? claim.nor_tendered_at)}
               onChange={(e) => handleClaimFieldChange("nor_tendered_at", e.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label>NOR accepted</Label>
+            <Input
+              type="datetime-local"
+              value={toInputValue(claimForm.nor_accepted_at ?? claim.nor_accepted_at)}
+              onChange={(e) => handleClaimFieldChange("nor_accepted_at", e.target.value)}
             />
           </div>
           <div className="space-y-1">
@@ -1892,17 +2170,28 @@ export default function CalculationPage({ params }: { params: { claimId: string 
             />
           </div>
           <div className="col-span-12 md:col-span-4 space-y-1">
-            <Label>Term</Label>
+            <Label>Contract / CP</Label>
             <Select
-              value={(claimForm.term_id as any) || ""}
-              onValueChange={(v: any) => handleClaimFieldChange("term_id", v)}
+              value={(claimForm.cp_id as any) || ""}
+              onValueChange={(v: any) => {
+                const next = v === "none" ? null : v;
+                handleClaimFieldChange("cp_id", next);
+                const selected = contracts.find((c) => c.id === next);
+                if (selected?.clause_profile) {
+                  handleClaimFieldChange("clause_profile", selected.clause_profile);
+                }
+                if (selected?.cp_number || selected?.name) {
+                  handleClaimFieldChange("contract_label", selected.cp_number || selected.name);
+                }
+              }}
             >
               <SelectTrigger>
-                <SelectValue placeholder="Select term" />
+                <SelectValue placeholder="Select contract" />
               </SelectTrigger>
               <SelectContent>
-                {terms.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                <SelectItem value="none">No contract</SelectItem>
+                {contracts.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>{c.cp_number || c.name || c.id}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -1929,6 +2218,14 @@ export default function CalculationPage({ params }: { params: { claimId: string 
               type="datetime-local"
               value={toInputValue(claimForm.nor_tendered_at)}
               onChange={(e) => handleClaimFieldChange("nor_tendered_at", e.target.value)}
+            />
+          </div>
+          <div className="col-span-12 md:col-span-4 space-y-1">
+            <Label>NOR Accepted</Label>
+            <Input
+              type="datetime-local"
+              value={toInputValue(claimForm.nor_accepted_at)}
+              onChange={(e) => handleClaimFieldChange("nor_accepted_at", e.target.value)}
             />
           </div>
           <div className="col-span-12 md:col-span-4 space-y-1">
@@ -1962,6 +2259,12 @@ export default function CalculationPage({ params }: { params: { claimId: string 
               value={toInputValue(claimForm.laytime_end)}
               onChange={(e) => handleClaimFieldChange("laytime_end", e.target.value)}
             />
+          </div>
+          <div className="col-span-12 space-y-2 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+            <p className="text-sm font-semibold text-slate-700">Clause rules applied</p>
+            <p className="text-xs text-slate-500">
+              Clause logic comes from the selected Contract/CP. Update clauses in Contracts/CPs to change counting rules.
+            </p>
           </div>
           <div className="col-span-12 md:col-span-4 space-y-1">
             <Label>Load/Discharge Rate</Label>
@@ -2257,7 +2560,7 @@ export default function CalculationPage({ params }: { params: { claimId: string 
                     <p className="text-xs text-slate-500 uppercase">{a.attachment_type}</p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <a href={a.file_url} target="_blank" rel="noreferrer" className="text-ocean-700 text-sm">Download</a>
+                    <a href={(a as any).signed_url || a.file_url} target="_blank" rel="noreferrer" className="text-ocean-700 text-sm">Download</a>
                     <Button size="sm" variant="ghost" className="text-red-600" onClick={() => deleteAttachment(a.id)}>Delete</Button>
                   </div>
                 </div>
@@ -2276,6 +2579,7 @@ export default function CalculationPage({ params }: { params: { claimId: string 
           loading={saving}
           portCalls={portCalls}
           claimPortCallId={claim.port_call_id}
+          countRules={countRules}
         />
 
         <div className="border-t border-slate-200" />

@@ -47,15 +47,18 @@ export async function POST(req: Request) {
       despatch_type,
       despatch_rate_value,
       despatch_currency,
+      clause_profile,
       laycan_start,
       laycan_end,
       nor_tendered_at,
+      nor_accepted_at,
       loading_start_at,
       loading_end_at,
       laytime_start,
       laytime_end,
       turn_time_method,
       term_id,
+      cp_id,
     } = body || {};
 
     if (!voyage_id) {
@@ -119,7 +122,7 @@ export async function POST(req: Request) {
       }
     }
 
-    const generatedRef = claim_reference || `CLM-${Date.now() % 100000}`;
+    const generatedRef = claim_reference || `CLM-${crypto.randomUUID()}`;
 
     const insertPayload = {
       claim_reference: generatedRef,
@@ -143,15 +146,18 @@ export async function POST(req: Request) {
       despatch_type,
       despatch_rate_value,
       despatch_currency,
+      clause_profile,
       laycan_start,
       laycan_end,
       nor_tendered_at,
+      nor_accepted_at,
       loading_start_at,
       loading_end_at,
       laytime_start,
       laytime_end,
       turn_time_method,
       term_id,
+      cp_id,
       reversible_pool_ids: Array.isArray(reversible_pool_ids) ? reversible_pool_ids : [],
     };
 

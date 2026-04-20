@@ -23,7 +23,7 @@ If you have Supabase CLI installed:
 supabase init
 
 # Link to your project
-supabase link --project-ref xcqtimhlrweeywtqsnwb
+supabase link --project-ref ttgkbhzullqkpkxofiuq
 
 # Run migrations
 supabase db push

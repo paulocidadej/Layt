@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createServerClient } from "@/lib/supabase";
-import { calculateLaytime } from "@/lib/laytime-engine";
+import { buildClauseProfile, calculateLaytime } from "@/lib/laytime-engine";
 
 const TEST_ENABLED = process.env.NEXT_PUBLIC_ENABLE_LAYTIME_TEST === "true";
 
@@ -44,6 +44,7 @@ export async function POST(req: Request, { params }: { params: { calcId: string 
 
   const body = await req.json().catch(() => ({}));
   const scope = body.scope || "all_ports";
+  const clauseProfile = buildClauseProfile(profile || {}, body?.clauses || {});
 
   const result = calculateLaytime({
     voyage: {}, // optional stub
@@ -55,6 +56,10 @@ export async function POST(req: Request, { params }: { params: { calcId: string 
     deductions: deductions || [],
     method: calc.calculation_method || "STANDARD",
     scope,
+    clauseProfile,
+    holidays: body?.holidays || [],
+    prorationPorts: Array.isArray(body?.prorationPorts) ? body.prorationPorts : [],
+    cargoMatchGroups: Array.isArray(body?.cargoMatchGroups) ? body.cargoMatchGroups : [],
   });
 
   // Persist cargo_port_laytime_rows (replace existing)

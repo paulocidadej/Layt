@@ -56,7 +56,7 @@ async function runMigration() {
       console.log('─'.repeat(50));
       console.log('\n✅ Migration file prepared!');
       console.log('\n📝 Next steps:');
-      console.log('1. Go to: https://supabase.com/dashboard/project/xcqtimhlrweeywtqsnwb');
+      console.log('1. Go to: https://supabase.com/dashboard/project/ttgkbhzullqkpkxofiuq');
       console.log('2. Click on "SQL Editor" in the left sidebar');
       console.log('3. Click "New Query"');
       console.log('4. Copy and paste the SQL above');
@@ -70,7 +70,7 @@ async function runMigration() {
   } catch (error) {
     console.error('❌ Error executing migration:', error.message);
     console.log('\n📋 Alternative: Run the SQL manually in Supabase Dashboard');
-    console.log('1. Go to: https://supabase.com/dashboard/project/xcqtimhlrweeywtqsnwb');
+    console.log('1. Go to: https://supabase.com/dashboard/project/ttgkbhzullqkpkxofiuq');
     console.log('2. Click on "SQL Editor"');
     console.log('3. Copy the SQL from: supabase/migrations/001_initial_schema.sql');
     console.log('4. Paste and run it');

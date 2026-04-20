@@ -23,6 +23,7 @@ const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Voyages", href: "/voyages", icon: Ship },
   { name: "Claims", href: "/claims", icon: FileText },
+  { name: "Contracts/CPs", href: "/claims/contracts", icon: FileText },
   { name: "Data Management", href: "/data", icon: Database },
 ];
 

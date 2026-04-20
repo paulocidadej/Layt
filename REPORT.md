@@ -1,6 +1,15 @@
 # Project Report (Laytime Platform)
 
 ## Recent Work
+- Contracts/CPs: added claim-level clause profile storage (`claims.clause_profile`) and charter-party clause profile (`charter_parties.clause_profile`), plus contract selection in the claim calculator to apply clause rules directly.
+- Contracts/CPs UI: added `/claims/contracts` page, menu entry, and API `/api/contracts` to manage contract clause rules (working time, NOR offset, rounding, start-next-working, count rules, holiday windows).
+- Claim calculator: removed Terms UI; statement view now shows clause rule badges, “Clause Rules Summary” badge, and a toggle between derived vs manual laytime start.
+- Laytime summary helper: now reads clause profiles for working-time windows, count rules, holiday windows, and NOR-derived laytime start.
+- Contracts/CPs schema alignment: switched to `charter_parties.name` (no `cp_number`) and removed `voyage_id` usage where not present in schema to resolve schema cache errors.
+- Contracts/CPs schema reintroduced: added `cp_number` and `voyage_id` columns so contracts can be linked to voyages and show a dedicated CP reference again.
+- Claims: fixed Create Claim default status to `created` to align with allowed statuses.
+- SOF port call creation: claim references now use UUIDs; added best-effort rollback to avoid partial port call/claim/event writes on failure.
+- Notifications: added `/api/notifications/unread` endpoint to support unread count.
 - Notifications: Added `notifications` table and RLS policies (`022`, `023`, `024`, `026` ensures `claim_id` exists). API `/api/notifications` supports fetch, per-item mark-read, pagination, and claim deep links; bell shows unread count and claim links, refreshes after mark-all-read. QC assignment/status changes, comments, and attachments now notify reviewers; inserts fall back gracefully if schema cache is stale.
 - QC/Comments: Claims store `qc_status`, `qc_reviewer_id`, `qc_notes`; reviewer dropdown loads tenant users; only assigned reviewer/super_admin can change QC fields; claim comments API/UI; attachments/comments trigger reviewer notifications.
 - Claims calculator: Status/reviewer chips and filters on claims list; non-reversible events strictly scoped to claim port call with clearer warnings; reversible pooling fixes; once-on-demurrage badge and quick edit timings panel; per-port breakdown hidden for non-reversible claims.
@@ -33,11 +42,15 @@
 - SOF mapping: expanded canonical keywords (pilot station arrival variants, richer cargo ops start/stop/resume) to improve matches on noisy PDFs.
 - Tests: Added Vitest setup (`npm test`) with unit coverage for SOF parser/header + canonical mapping, and laytime summary math helper. (Note: `npm install` may be required to fetch vitest when network is available.)
 - OCR service (latest): Switched to PyMuPDF per-page rendering (no bulk pdf2image), lightweight preprocessing, per-page Tesseract with dense retry, auto-rotation, and a hard time-budgeted loop that returns partial results with warnings instead of timing out. `PyMuPDF` added to requirements; env tunables include `SOF_OCR_DPI`, `SOF_MAX_SECONDS`, `SOF_MAX_PDF_PAGES` (0=all pages).
+- OCR service (Tailwinds/Santos): Still timing out at 295s on Render in current deployment. Needs redeploy with the per-page pipeline and tuning of `SOF_OCR_DPI`/`SOF_MAX_SECONDS`, plus profile of per-page OCR costs to avoid request-level timeouts while keeping all pages.
 - OCR service (PaddleOCR): Migrated extractor to PaddleOCR (CPU) with grayscale PyMuPDF renders and downscale safeguards. Requirements pinned to `paddleocr 2.7.0 / paddlepaddle 2.6.2`, `numpy 1.23.5`, `opencv-python-headless 4.8.0.74`, `PyMuPDF 1.20.2`. Dockerfile uses python:3.10-slim with poppler, swig/build-essential, libgomp/libgl deps. Env tunables unchanged; Tesseract configs kept as no-ops for backward compat. Current AWS test endpoint: `http://51.20.12.235:8000/extract`.
 - SOF parser (latest): Full month-name date parsing, backscan for date context for time-only lines, and UTC-suffixed timestamps to prevent client-side timezone shifts. Vessel fallback improved (MV/uppercase, filename) when headers are blank.
 - SOF parser pending: add stronger filtering to drop header/footer noise (lines without valid time/date or with junk times), keep timeline-like rows, and reject impossible timestamps seen in Tailwinds output (e.g., `T78:06`).
 
 ## Migrations
+- `029_claim_clause_profile.sql`: Adds `claims.clause_profile` and `claims.cp_id` (contract link).
+- `030_charter_party_clause_profile.sql`: Adds `charter_parties.clause_profile` to store contract clause rules.
+- `031_charter_party_cp_number_voyage_id.sql`: Adds `charter_parties.cp_number` and `charter_parties.voyage_id` with index.
 - `020_qc_and_comments.sql`: QC fields, `claim_comments`.
 - `021_claim_status_extension.sql`: Expanded claim_status values.
 - `022_notifications.sql`: Notifications table (user_id, tenant_id, claim_id, title/body/level/read_at).

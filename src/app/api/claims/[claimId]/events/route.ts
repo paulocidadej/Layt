@@ -21,47 +21,67 @@ async function loadClaim(
   claimId: string
 ): Promise<LoadedClaim> {
   // Minimal column selection to avoid schema cache issues; fetch voyage separately.
-  const { data: claim, error } = await supabase
+  const selectFields = [
+    "id",
+    "tenant_id",
+    "voyage_id",
+    "claim_reference",
+    "demurrage_rate",
+    "demurrage_currency",
+    "demurrage_after_hours",
+    "demurrage_rate_after",
+    "despatch_rate_value",
+    "despatch_type",
+    "despatch_currency",
+    "operation_type",
+    "port_name",
+    "port_call_id",
+    "reversible_scope",
+    "laycan_start",
+    "laycan_end",
+    "load_discharge_rate",
+    "load_discharge_rate_unit",
+    "fixed_rate_duration_hours",
+    "reversible",
+    "claim_status",
+    "laytime_start",
+    "laytime_end",
+    "nor_tendered_at",
+    "nor_accepted_at",
+    "loading_start_at",
+    "loading_end_at",
+    "turn_time_method",
+    "term_id",
+    "cp_id",
+    "reversible_pool_ids",
+    "qc_status",
+    "qc_reviewer_id",
+    "qc_notes",
+    "clause_profile",
+  ].join(",");
+
+  let { data: claim, error } = await supabase
     .from("claims")
-    .select(
-      [
-        "id",
-        "tenant_id",
-        "voyage_id",
-        "claim_reference",
-        "demurrage_rate",
-        "demurrage_currency",
-        "demurrage_after_hours",
-        "demurrage_rate_after",
-        "despatch_rate_value",
-        "despatch_type",
-        "despatch_currency",
-        "operation_type",
-        "port_name",
-        "port_call_id",
-        "reversible_scope",
-        "laycan_start",
-        "laycan_end",
-        "load_discharge_rate",
-        "load_discharge_rate_unit",
-        "fixed_rate_duration_hours",
-        "reversible",
-        "claim_status",
-        "laytime_start",
-        "laytime_end",
-        "nor_tendered_at",
-        "loading_start_at",
-        "loading_end_at",
-        "turn_time_method",
-        "term_id",
-        "reversible_pool_ids",
-        "qc_status",
-        "qc_reviewer_id",
-        "qc_notes",
-      ].join(",")
-    )
+    .select(selectFields)
     .eq("id", claimId)
     .single();
+
+  if (error) {
+    const err: any = error;
+    const message = String(err?.message || "");
+    const shouldFallback =
+      err?.code === "42703" ||
+      message.includes("schema cache") ||
+      message.includes("relationship");
+    if (shouldFallback) {
+      const fallbackFields = selectFields
+        .replace(",clause_profile", "");
+      const fallbackFieldsNoNor = fallbackFields.replace(",nor_accepted_at", "");
+      const retry = await supabase.from("claims").select(fallbackFieldsNoNor).eq("id", claimId).single();
+      claim = retry.data;
+      error = retry.error;
+    }
+  }
 
   if (error || !claim) return { error: error?.message || "Claim not found" };
 
@@ -103,7 +123,19 @@ async function loadClaim(
   }
 
   const claimObj = typeof claim === "object" && claim !== null ? claim : {};
-  return { claim: { ...(claimObj as any), voyages: voyageData, port_calls: combinedPortCalls } };
+  let contractLabel: string | null = null;
+  if (claimAny.cp_id) {
+    const { data: cp } = await supabase
+      .from("charter_parties")
+      .select("name, cp_number")
+      .eq("id", claimAny.cp_id)
+      .maybeSingle();
+    if (cp) {
+      contractLabel = (cp as any).cp_number || (cp as any).name || null;
+    }
+  }
+
+  return { claim: { ...(claimObj as any), voyages: voyageData, port_calls: combinedPortCalls, contract_label: contractLabel } };
 }
 
 export async function GET(
@@ -149,16 +181,6 @@ export async function GET(
         ev.time_used ??
         hoursBetween(ev.from_datetime, ev.to_datetime, ev.rate_of_calculation),
     })) ?? [];
-
-  // Also return available terms for this tenant (or public) so the calculator has a guaranteed list.
-  const termsFilter = claimAny.tenant_id
-    ? `tenant_id.eq.${claimAny.tenant_id},is_public.eq.true`
-    : "is_public.eq.true";
-  const { data: terms } = await supabase
-    .from("terms")
-    .select("id,name")
-    .or(termsFilter)
-    .order("name", { ascending: true });
 
   const { data: audit } = await supabase
     .from("calculation_events_audit")
@@ -233,7 +255,6 @@ export async function GET(
   return NextResponse.json({
     claim,
     events: hydratedEvents,
-    terms: terms || [],
     audit: audit || [],
     sibling_summaries: siblingSummaries,
   });
@@ -410,6 +431,14 @@ export async function PATCH(
       return NextResponse.json({ events: [] });
     }
 
+    const { data: existingRows, error: existingError } = await supabase
+      .from("calculation_events")
+      .select("deduction_name, from_datetime, to_datetime, rate_of_calculation, port_call_id, time_used, row_order")
+      .eq("claim_id", params.claimId);
+    if (existingError) {
+      console.error("PATCH /events backup error", existingError);
+    }
+
     const rows: any[] = [];
     incoming.forEach((ev: any, idx: number) => {
       const name = ev.deduction_name || ev.event;
@@ -437,6 +466,23 @@ export async function PATCH(
     const { data, error: insertErr } = await supabase.from("calculation_events").insert(rows).select();
     if (insertErr) {
       console.error("PATCH /events insert error", insertErr);
+      const restore = (existingRows || []).map((row: any) => ({
+        claim_id: params.claimId,
+        tenant_id: claimAny.tenant_id,
+        deduction_name: row.deduction_name,
+        from_datetime: row.from_datetime,
+        to_datetime: row.to_datetime,
+        rate_of_calculation: row.rate_of_calculation,
+        port_call_id: row.port_call_id,
+        time_used: row.time_used,
+        row_order: row.row_order,
+      }));
+      if (restore.length > 0) {
+        const { error: restoreErr } = await supabase.from("calculation_events").insert(restore);
+        if (restoreErr) {
+          console.error("PATCH /events restore error", restoreErr);
+        }
+      }
       return NextResponse.json({ error: insertErr.message }, { status: 500 });
     }
 

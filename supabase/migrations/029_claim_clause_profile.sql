@@ -1,0 +1,5 @@
+ALTER TABLE claims
+  ADD COLUMN IF NOT EXISTS clause_profile JSONB DEFAULT '{}'::jsonb;
+
+ALTER TABLE claims
+  ADD COLUMN IF NOT EXISTS cp_id UUID REFERENCES charter_parties(id) ON DELETE SET NULL;

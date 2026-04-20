@@ -3,7 +3,7 @@
 ## Quick Start
 
 1. **Open Supabase SQL Editor**
-   - Go to: https://supabase.com/dashboard/project/xcqtimhlrweeywtqsnwb
+   - Go to: https://supabase.com/dashboard/project/ttgkbhzullqkpkxofiuq
    - Click on **SQL Editor** in the left sidebar
 
 2. **Run the Migration**

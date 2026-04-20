@@ -27,7 +27,7 @@ export default async function LaytimePage() {
       .order("voyage_reference", { ascending: true }),
     supabase
       .from("charter_parties")
-      .select("id, cp_number, voyage_id")
+      .select("id, name, voyage_id")
       .eq("tenant_id", session.user.tenantId)
       .order("created_at", { ascending: false }),
     supabase

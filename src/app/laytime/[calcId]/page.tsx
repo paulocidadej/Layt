@@ -41,7 +41,7 @@ export default async function LaytimeCalcPage({ params }: { params: { calcId: st
       .eq("tenant_id", session.user.tenantId),
     supabase
       .from("charter_parties")
-      .select("id, cp_number, voyage_id, demurrage_rate_per_day, despatch_rate_per_day, laytime_allowed_value, laytime_allowed_unit")
+      .select("id, name, voyage_id, demurrage_rate_per_day, despatch_rate_per_day, laytime_allowed_value, laytime_allowed_unit")
       .eq("voyage_id", calc.voyage_id)
       .eq("tenant_id", session.user.tenantId),
     supabase

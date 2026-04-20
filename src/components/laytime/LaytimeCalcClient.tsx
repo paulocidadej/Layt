@@ -9,7 +9,7 @@ type PortCall = { id: string; port_name: string; activity?: string | null; seque
 type Activity = any;
 type Deduction = any;
 type Cargo = { id: string; cargo_name: string; quantity?: number | null; unit?: string | null };
-type CP = { id: string; cp_number?: string | null; demurrage_rate_per_day?: number | null; despatch_rate_per_day?: number | null; laytime_allowed_value?: number | null; laytime_allowed_unit?: string | null };
+type CP = { id: string; name?: string | null; demurrage_rate_per_day?: number | null; despatch_rate_per_day?: number | null; laytime_allowed_value?: number | null; laytime_allowed_unit?: string | null };
 
 export default function LaytimeCalcClient({
   calc,

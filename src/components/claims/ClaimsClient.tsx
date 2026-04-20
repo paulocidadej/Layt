@@ -34,7 +34,6 @@ type Claim = {
 
 type Voyage = { id: string; voyage_reference: string; tenant_id?: string | null; cargo_quantity?: number | null; cargo_names?: { name: string | null } | null; charter_parties?: { name: string | null } | null };
 type Tenant = { id: string; name: string };
-type Term = { id: string; name: string };
 
 export default function ClaimsClient({
   claims,
@@ -42,7 +41,6 @@ export default function ClaimsClient({
   search,
   isSuperAdmin,
   tenantIdFilter,
-  terms,
   defaultVoyageId,
   defaultPortCallId,
   openCreate,
@@ -52,7 +50,6 @@ export default function ClaimsClient({
   search: string;
   isSuperAdmin: boolean;
   tenantIdFilter?: string;
-  terms: Term[];
   defaultVoyageId?: string;
   defaultPortCallId?: string;
   openCreate?: boolean;
@@ -208,7 +205,6 @@ export default function ClaimsClient({
             voyages={voyages}
             tenantId={tenantValue}
             isSuperAdmin={isSuperAdmin}
-            terms={terms}
             defaultVoyageId={defaultVoyageId}
             defaultPortCallId={defaultPortCallId}
             initialOpen={openCreate}

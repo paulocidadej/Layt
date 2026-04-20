@@ -3,10 +3,28 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createServerClient } from "@/lib/supabase";
 
+async function loadClaim(
+  supabase: ReturnType<typeof createServerClient>,
+  claimId: string
+) {
+  const { data, error } = await supabase
+    .from("claims")
+    .select("id, tenant_id, claim_reference, qc_reviewer_id")
+    .eq("id", claimId)
+    .single();
+  if (error || !data) return null;
+  return data;
+}
+
 export async function GET(_req: Request, { params }: { params: { claimId: string } }) {
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const supabase = createServerClient();
+  const claim = await loadClaim(supabase, params.claimId);
+  if (!claim) return NextResponse.json({ error: "Claim not found" }, { status: 404 });
+  if (session.user.role !== "super_admin" && session.user.tenantId !== claim.tenant_id) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
   const { data, error } = await supabase
     .from("claim_comments")
     .select("id, body, user_id, claim_id, created_at, users(full_name)")
@@ -23,6 +41,11 @@ export async function POST(req: Request, { params }: { params: { claimId: string
   const text = body?.body;
   if (!text) return NextResponse.json({ error: "Comment text is required" }, { status: 400 });
   const supabase = createServerClient();
+  const claim = await loadClaim(supabase, params.claimId);
+  if (!claim) return NextResponse.json({ error: "Claim not found" }, { status: 404 });
+  if (session.user.role !== "super_admin" && session.user.tenantId !== claim.tenant_id) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
   const { data, error } = await supabase
     .from("claim_comments")
     .insert({ claim_id: params.claimId, user_id: session.user.id, body: text })
@@ -31,19 +54,14 @@ export async function POST(req: Request, { params }: { params: { claimId: string
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   try {
     // Notify assigned reviewer (if any) excluding the commenter
-    const { data: claimRow } = await supabase
-      .from("claims")
-      .select("id, claim_reference, qc_reviewer_id, tenant_id")
-      .eq("id", params.claimId)
-      .maybeSingle();
-    if (claimRow?.qc_reviewer_id) {
+    if (claim.qc_reviewer_id && claim.qc_reviewer_id !== session.user.id) {
       const doInsert = async (withClaim: boolean) =>
         supabase.from("notifications").insert({
-          user_id: claimRow.qc_reviewer_id as string,
-          tenant_id: claimRow.tenant_id,
-          claim_id: withClaim ? claimRow.id : null,
+          user_id: claim.qc_reviewer_id as string,
+          tenant_id: claim.tenant_id,
+          claim_id: withClaim ? claim.id : null,
           title: "New comment on claim",
-          body: `Claim ${claimRow.claim_reference || ""} has a new comment.`,
+          body: `Claim ${claim.claim_reference || ""} has a new comment.`,
           level: "info",
         });
       let { error: nErr } = await doInsert(true);

@@ -71,25 +71,6 @@ async function loadVoyages(tenantId?: string) {
   }));
 }
 
-async function loadTerms(tenantId?: string) {
-  const supabase = createServerClient();
-  let query = supabase
-    .from("terms")
-    .select("id, name")
-    .order("name", { ascending: true });
-  if (tenantId) {
-    query = query.or(`tenant_id.eq.${tenantId},is_public.eq.true`);
-  } else {
-    query = query.or("is_public.eq.true");
-  }
-  const { data, error } = await query;
-  if (error) {
-    console.error("Error fetching terms", error);
-    return [];
-  }
-  return data || [];
-}
-
 export default async function ClaimsPage({ searchParams }: { searchParams?: SearchParams }) {
   const session = await getServerSession(authOptions);
   if (!session?.user) {
@@ -107,10 +88,9 @@ export default async function ClaimsPage({ searchParams }: { searchParams?: Sear
     redirect("/auth/login");
   }
 
-  const [claims, voyages, terms] = await Promise.all([
+  const [claims, voyages] = await Promise.all([
     loadClaims(tenantFilter, search),
     loadVoyages(tenantFilter),
-    loadTerms(tenantFilter),
   ]);
 
   return (
@@ -120,7 +100,6 @@ export default async function ClaimsPage({ searchParams }: { searchParams?: Sear
       search={search}
       isSuperAdmin={session.user.role === "super_admin"}
       tenantIdFilter={tenantFilter || ""}
-      terms={terms}
       defaultVoyageId={defaultVoyageId}
       defaultPortCallId={defaultPortCallId}
       openCreate={openCreate}

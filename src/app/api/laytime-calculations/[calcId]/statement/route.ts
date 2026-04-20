@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createServerClient } from "@/lib/supabase";
+import { buildClauseProfile, deriveLaytimeStart } from "@/lib/laytime-engine";
 
 const TEST_ENABLED = process.env.NEXT_PUBLIC_ENABLE_LAYTIME_TEST === "true";
 
@@ -20,7 +21,7 @@ export async function GET(_req: Request, { params }: { params: { calcId: string 
     .single();
   if (error || !calc) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const [{ data: rows }, { data: portCalls }, { data: cargoes }] = await Promise.all([
+  const [{ data: rows }, { data: portCalls }, { data: cargoes }, { data: profile }, { data: activities }] = await Promise.all([
     supabase
       .from("cargo_port_laytime_rows")
       .select("*")
@@ -36,7 +37,18 @@ export async function GET(_req: Request, { params }: { params: { calcId: string 
       .select("id, cargo_name, quantity, unit")
       .eq("voyage_id", calc.voyage_id)
       .eq("tenant_id", session.user.tenantId),
+    calc.profile_id
+      ? supabase.from("laytime_profiles").select("*").eq("id", calc.profile_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+    supabase
+      .from("port_activities")
+      .select("event_type, from_datetime, to_datetime")
+      .eq("laytime_calculation_id", params.calcId)
+      .eq("tenant_id", session.user.tenantId),
   ]);
+
+  const clauseProfile = buildClauseProfile(profile || {});
+  const laytimeStartDerived = deriveLaytimeStart(activities || [], clauseProfile, clauseProfile.holidayWindows || []);
 
   const statementJson = {
     header: {
@@ -44,6 +56,15 @@ export async function GET(_req: Request, { params }: { params: { calcId: string 
       voyageId: calc.voyage_id,
       status: calc.status,
       method: calc.calculation_method,
+      clauseProfile: {
+        workingTimeDefinition: clauseProfile.workingTimeDefinition,
+        norStartTrigger: clauseProfile.norStartTrigger,
+        norOffsetHours: clauseProfile.norOffsetHours,
+        startNextWorkingPeriod: clauseProfile.startNextWorkingPeriod,
+        roundingRule: clauseProfile.roundingRule,
+        holidays: clauseProfile.holidayWindows || [],
+      },
+      laytimeStartDerived,
       totals: {
         allowedMinutes: calc.time_allowed_minutes,
         usedMinutes: calc.time_used_minutes,

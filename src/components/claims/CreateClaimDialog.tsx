@@ -31,7 +31,13 @@ type Voyage = {
   charter_parties?: { name: string | null } | null;
 };
 type Tenant = { id: string; name: string };
-type Term = { id: string; name: string };
+type Contract = {
+  id: string;
+  name?: string | null;
+  cp_number?: string | null;
+  voyage_id?: string | null;
+  clause_profile?: any;
+};
 type VoyageClaim = {
   id: string;
   claim_reference: string;
@@ -47,13 +53,12 @@ interface Props {
   voyages: Voyage[];
   tenantId?: string | null;
   isSuperAdmin: boolean;
-  terms: Term[];
   defaultVoyageId?: string;
   defaultPortCallId?: string;
   initialOpen?: boolean;
 }
 
-export function CreateClaimDialog({ voyages, tenantId, isSuperAdmin, terms, defaultVoyageId, defaultPortCallId, initialOpen = false }: Props) {
+export function CreateClaimDialog({ voyages, tenantId, isSuperAdmin, defaultVoyageId, defaultPortCallId, initialOpen = false }: Props) {
   useSession(); // keep session provider engaged if needed later
   const [open, setOpen] = useState(initialOpen);
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -79,19 +84,19 @@ export function CreateClaimDialog({ voyages, tenantId, isSuperAdmin, terms, defa
   const [laycanStart, setLaycanStart] = useState("");
   const [laycanEnd, setLaycanEnd] = useState("");
   const [norAt, setNorAt] = useState("");
+  const [norAcceptedAt, setNorAcceptedAt] = useState("");
   const [loadStart, setLoadStart] = useState("");
   const [loadEnd, setLoadEnd] = useState("");
   const [laytimeStart, setLaytimeStart] = useState("");
   const [laytimeEnd, setLaytimeEnd] = useState("");
   const [turnTimeMethod, setTurnTimeMethod] = useState("");
-  const [selectedTermId, setSelectedTermId] = useState<string>("");
+  const [selectedContractId, setSelectedContractId] = useState<string>("");
   const [reversibleScope, setReversibleScope] = useState<"all_ports" | "load_only" | "discharge_only">("all_ports");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [ports, setPorts] = useState<{ id: string; name: string }[]>([]);
   const [portText, setPortText] = useState("");
   const [activeField, setActiveField] = useState<string>("");
-  const [termText, setTermText] = useState("");
   const [previewAllowed, setPreviewAllowed] = useState<string>("—");
   const [portCalls, setPortCalls] = useState<{ id: string; port_name: string; activity?: string | null }[]>([]);
   const [portCallId, setPortCallId] = useState<string>("none");
@@ -99,11 +104,12 @@ export function CreateClaimDialog({ voyages, tenantId, isSuperAdmin, terms, defa
   const [pooledClaimIds, setPooledClaimIds] = useState<string[]>([]);
   const [sectionError, setSectionError] = useState<string | null>(null);
   const [showValidationHint, setShowValidationHint] = useState(false);
+  const [contracts, setContracts] = useState<Contract[]>([]);
 
   const resetForm = () => {
     setClaimRef("");
     setVoyageId("");
-    setStatus("draft");
+    setStatus("created");
     setOperationType("");
     setPortName("");
     setCountry("");
@@ -121,17 +127,17 @@ export function CreateClaimDialog({ voyages, tenantId, isSuperAdmin, terms, defa
     setLaycanStart("");
     setLaycanEnd("");
     setNorAt("");
+    setNorAcceptedAt("");
     setLoadStart("");
     setLoadEnd("");
     setLaytimeStart("");
     setLaytimeEnd("");
     setTurnTimeMethod("");
-    setSelectedTermId("");
+    setSelectedContractId("");
     setError(null);
     setPortText("");
     setPorts([]);
     setActiveField("");
-    setTermText("");
     setPreviewAllowed("—");
     setReversibleScope("all_ports");
   };
@@ -169,6 +175,29 @@ export function CreateClaimDialog({ voyages, tenantId, isSuperAdmin, terms, defa
       fetchPorts();
     }
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    const loadContracts = async () => {
+      try {
+        const query = isSuperAdmin && selectedTenantId ? `?tenantId=${selectedTenantId}` : "";
+        const res = await fetch(`/api/contracts${query}`, { signal: controller.signal });
+        const json = await res.json();
+        if (res.ok) {
+          setContracts(json.contracts || []);
+        } else {
+          setContracts([]);
+        }
+      } catch (e) {
+        if ((e as any)?.name !== "AbortError") {
+          console.error("Failed to load contracts", e);
+        }
+      }
+    };
+    loadContracts();
+    return () => controller.abort();
+  }, [open, isSuperAdmin, selectedTenantId]);
 
   useEffect(() => {
     async function fetchPortCalls() {
@@ -241,26 +270,15 @@ export function CreateClaimDialog({ voyages, tenantId, isSuperAdmin, terms, defa
     }
   };
 
-  const requestNewTerm = async (name: string) => {
-    if (!name) return;
-    try {
-      const res = await fetch("/api/requests", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ request_type: "terms", name }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Failed to submit request");
-      alert("Term request sent to admin for approval.");
-    } catch (e: any) {
-      alert(e.message || "Request failed");
-    }
-  };
-
   const visibleVoyages = isSuperAdmin && selectedTenantId
     ? voyages.filter((v: any) => v.tenant_id === selectedTenantId || !v.tenant_id)
     : voyages;
   const selectedVoyage = visibleVoyages.find((v) => v.id === voyageId);
+  const filteredContracts = contracts.filter((c) => {
+    if (!voyageId) return true;
+    return !c.voyage_id || c.voyage_id === voyageId;
+  });
+  const selectedContract = contracts.find((c) => c.id === selectedContractId) || null;
   const superAdminDisabled = isSuperAdmin && !selectedTenantId;
 
   const scopedAvailableClaims = availableClaims.filter((c) => {
@@ -280,6 +298,14 @@ export function CreateClaimDialog({ voyages, tenantId, isSuperAdmin, terms, defa
     const validIds = scopedAvailableClaims.map((c) => c.id);
     setPooledClaimIds((prev) => prev.filter((id) => validIds.includes(id)));
   }, [reversible, scopedAvailableClaims.map((c) => c.id).join(",")]);
+
+  useEffect(() => {
+    if (!selectedContractId) return;
+    const exists = filteredContracts.some((c) => c.id === selectedContractId);
+    if (!exists) {
+      setSelectedContractId("");
+    }
+  }, [selectedContractId, filteredContracts.map((c) => c.id).join(",")]);
 
   const togglePoolClaim = (id: string) => {
     setPooledClaimIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -369,12 +395,14 @@ export function CreateClaimDialog({ voyages, tenantId, isSuperAdmin, terms, defa
         laycan_start: laycanStart || null,
         laycan_end: laycanEnd || null,
         nor_tendered_at: norAt || null,
+        nor_accepted_at: norAcceptedAt || null,
         loading_start_at: loadStart || null,
         loading_end_at: loadEnd || null,
         laytime_start: laytimeStart || null,
         laytime_end: laytimeEnd || null,
         turn_time_method: turnTimeMethod || null,
-        term_id: selectedTermId || null,
+        cp_id: selectedContractId || null,
+        clause_profile: selectedContract?.clause_profile || {},
         reversible_scope: reversibleScope || "all_ports",
         port_call_id: portCallId === "none" ? null : portCallId,
         reversible_pool_ids: reversible ? pooledClaimIds : [],
@@ -749,50 +777,23 @@ export function CreateClaimDialog({ voyages, tenantId, isSuperAdmin, terms, defa
                 </div>
 
                 <div className="col-span-12 md:col-span-6 space-y-1">
-                  <Label>Term</Label>
-                  <div className="relative">
-                    <Input
-                      value={termText}
-                      onChange={(e) => {
-                        setTermText(e.target.value);
-                        setSelectedTermId("");
-                      }}
-                      onFocus={() => setActiveField("term")}
-                      onBlur={() => setTimeout(() => setActiveField(""), 150)}
-                      placeholder="Type or select term"
-                    />
-                    {activeField === "term" && (
-                      <div className="absolute z-30 mt-1 w-full bg-white border rounded shadow-sm text-sm text-gray-700 max-h-40 overflow-auto">
-                        {terms
-                          .filter((t) => !termText || t.name.toLowerCase().includes(termText.toLowerCase()))
-                          .slice(0, 6)
-                          .map((t) => (
-                            <button
-                              key={t.id}
-                              type="button"
-                              className="w-full text-left px-2 py-1 hover:bg-slate-100"
-                              onMouseDown={(e) => {
-                                e.preventDefault();
-                                setTermText(t.name);
-                                setSelectedTermId(t.id);
-                              }}
-                            >
-                              {t.name}
-                            </button>
-                          ))}
-                        <button
-                          type="button"
-                          className="w-full text-left px-2 py-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            requestNewTerm(termText || "New term");
-                          }}
-                        >
-                          Request “{termText || "new term"}”
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                  <Label>Contract / CP</Label>
+                  <Select
+                    value={selectedContractId || "none"}
+                    onValueChange={(v: any) => setSelectedContractId(v === "none" ? "" : v)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select contract" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No contract</SelectItem>
+                      {filteredContracts.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>
+                          {c.cp_number ? `${c.cp_number} · ${c.name || "Contract"}` : c.name || c.id}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             </div>
@@ -812,6 +813,10 @@ export function CreateClaimDialog({ voyages, tenantId, isSuperAdmin, terms, defa
                 <div className="col-span-12 md:col-span-6 space-y-1">
                   <Label>NOR Tendered</Label>
                   <Input type="datetime-local" value={norAt} onChange={(e) => setNorAt(e.target.value)} />
+                </div>
+                <div className="col-span-12 md:col-span-6 space-y-1">
+                  <Label>NOR Accepted</Label>
+                  <Input type="datetime-local" value={norAcceptedAt} onChange={(e) => setNorAcceptedAt(e.target.value)} />
                 </div>
                 <div className="col-span-12 md:col-span-6 space-y-1">
                   <Label>Loading/Discharge Start</Label>
