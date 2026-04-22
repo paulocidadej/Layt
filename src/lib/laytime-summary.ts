@@ -36,6 +36,13 @@ export type LaytimeClaim = {
   [key: string]: any;
 };
 
+export type HolidayWindow = {
+  start?: string | null;
+  end?: string | null;
+  name?: string | null;
+  [key: string]: any;
+};
+
 export type SiblingSummary = {
   claim_id: string;
   port_call_id?: string | null;
@@ -124,7 +131,7 @@ export function buildStatementSnapshot({
     if (!clauseProfile.holidayWindows || clauseProfile.holidayWindows.length === 0) return false;
     const dayStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0);
     const dayEnd = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 23, 59, 59, 999);
-    return clauseProfile.holidayWindows.some((h) => {
+    return clauseProfile.holidayWindows.some((h: HolidayWindow) => {
       const hStart = toNaiveUtc(h.start);
       const hEnd = toNaiveUtc(h.end);
       if (Number.isNaN(hStart) || Number.isNaN(hEnd)) return false;

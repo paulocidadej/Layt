@@ -1961,7 +1961,7 @@ export default function CalculationPage({ params }: { params: { claimId: string 
       working: clauseProfile.workingTimeDefinition || "SHINC",
       norOffset: Number(clauseProfile.norOffsetHours || 0),
       startNextWorkingPeriod: !!clauseProfile.startNextWorkingPeriod,
-      holidayWindows: holidayWindows || [],
+        holidayWindows: clauseProfile.holidayWindows || [],
     });
     const derivedEnd = latest?.to_datetime || latest?.from_datetime || null;
     if (!derivedStart || !derivedEnd) {
@@ -2114,7 +2114,7 @@ export default function CalculationPage({ params }: { params: { claimId: string 
             />
           </div>
           <div className="space-y-1 flex items-end">
-            <Button size="sm" onClick={saveClaimDetails} disabled={savingClaim}>
+            <Button size="sm" onClick={() => saveClaimDetails()} disabled={savingClaim}>
               {savingClaim ? "Saving…" : "Save timings"}
             </Button>
           </div>
@@ -2133,7 +2133,7 @@ export default function CalculationPage({ params }: { params: { claimId: string 
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-4 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-slate-800">Claim Details</h2>
-          <Button onClick={saveClaimDetails} disabled={savingClaim}>
+          <Button onClick={() => saveClaimDetails()} disabled={savingClaim}>
             {savingClaim ? "Saving..." : "Save Details"}
           </Button>
         </div>
@@ -2437,7 +2437,7 @@ export default function CalculationPage({ params }: { params: { claimId: string 
               </p>
             )}
           </div>
-          <Button onClick={saveClaimDetails} disabled={savingClaim || (!canEditQc && !!qcAssignedId)}>
+          <Button onClick={() => saveClaimDetails()} disabled={savingClaim || (!canEditQc && !!qcAssignedId)}>
             {savingClaim ? "Saving..." : canEditQc || !qcAssignedId ? "Save QC" : "Locked"}
           </Button>
         </div>
